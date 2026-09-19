@@ -2,7 +2,7 @@
   "name": "sqltools-oracle-driver",
   "displayName": "SQLTools Oracle Driver",
   "description": "SQLTools driver for Oracle",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "engines": {
     "vscode": "^1.42.0"
   },
@@ -55,12 +55,14 @@
   "dependencies": {
     "@sqltools/base-driver": "latest",
     "@sqltools/types": "latest",
-    "oracledb": "file:../../oracledb-src-6.10.0.tgz",
+    "oracledb": "^6.10.0",
     "uuid": "^9.0.0"
   },
   "devDependencies": {
     "@babel/preset-env": "^7.20.2",
     "@types/node": "^14",
+    "@types/oracledb": "^6.10.4",
+    "@types/uuid": "^9.0.8",
     "@types/vscode": "^1.42.0",
     "@typescript-eslint/eslint-plugin": "^5.47.1",
     "@typescript-eslint/parser": "^5.45.0",

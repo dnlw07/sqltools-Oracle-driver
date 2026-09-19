@@ -36,7 +36,7 @@ export async function activate(extContext: ExtensionContext): Promise<IDriverExt
   const extensionId = `${publisher}.${name}`;
   diagnosticCollection = vscode.languages.createDiagnosticCollection('sql-oracle');
   extContext.subscriptions.push(diagnosticCollection);
-  setInterval(function(e){
+  setInterval(function(){
     if(!vscode.window.activeTextEditor){
       return;
     }

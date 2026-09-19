@@ -50,7 +50,7 @@ export interface PoolConfig{
 }
 
 
-export default class OracleDriver extends AbstractDriver<OracleDBLib.Pool, PoolConfig> implements IConnectionDriver {
+export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection, PoolConfig> implements IConnectionDriver {
 
   /**
    * If you driver depends on node packages, list it below on `deps` prop.
@@ -85,36 +85,22 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Pool, PoolC
 
   public async open() {
     if (this.connection) {
-      if(this.pooled)
-      {
-        return new Promise<OracleDBLib.Connection>((resolve, reject) => {
-          this.lib.getConnection(async (err, conn) => {
-            if (err) return reject(err);
-            await conn.ping(async error => {
-              if (error) return reject(error);
-              this.connection = Promise.resolve(conn);
-              return resolve(this.connection);
-            });
-          });
-        });
-      }
-      else{
-        let standAloneConnSetting = {
+      if(this.pooled) {
+        const conn = await this.lib.getConnection();
+        await conn.ping();
+        this.connection = Promise.resolve(conn);
+        return conn;
+      } else {
+        const standAloneConnSetting = {
           user: this.credentials.username,
           password: this.credentials.password,
           connectString: this.credentials.connectString,
           privilege: this.privilegeMap[this.privilege]
-        }
-        return new Promise<OracleDBLib.Connection>((resolve, reject) => {
-          this.lib.getConnection(standAloneConnSetting,async (err, conn) => {
-            if (err) return reject(err);
-            await conn.ping(async error => {
-              if (error) return reject(error);
-              this.connection = Promise.resolve(conn);
-              return resolve(this.connection);
-            });
-          });
-        });
+        };
+        const conn = await this.lib.getConnection(standAloneConnSetting);
+        await conn.ping();
+        this.connection = Promise.resolve(conn);
+        return conn;
       }
     }
     if(!this.credentials.connectString){
@@ -151,7 +137,7 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Pool, PoolC
       // }
     }
     if(this.pooled){
-      const pool = await this.lib.createPool({
+      await this.lib.createPool({
         user: this.credentials.username,
         password: this.credentials.password,
         connectString: this.credentials.connectString,
@@ -159,33 +145,21 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Pool, PoolC
         poolMax       : 4,
         poolMin       : 4
       });
-      return new Promise<OracleDBLib.Connection>((resolve, reject) => {
-        this.lib.getConnection(async (err, conn) => {
-          if (err) return reject(err);
-          await conn.ping(async error => {
-            if (error) return reject(error);
-            this.connection = Promise.resolve(conn);
-            return resolve(this.connection);
-          });
-        });
-      });
+      const conn = await this.lib.getConnection();
+      await conn.ping();
+      this.connection = Promise.resolve(conn);
+      return conn;
     }else{
-      let standAloneConnSetting = {
+      const standAloneConnSetting = {
         user: this.credentials.username,
         password: this.credentials.password,
         connectString: this.credentials.connectString,
         privilege: this.privilegeMap[this.privilege]
-      }
-      return new Promise<OracleDBLib.Connection>((resolve, reject) => {
-        this.lib.getConnection(standAloneConnSetting,async (err, conn) => {
-          if (err) return reject(err);
-          await conn.ping(async error => {
-            if (error) return reject(error);
-            this.connection = Promise.resolve(conn);
-            return resolve(this.connection);
-          });
-        });
-      });
+      };
+      const conn = await this.lib.getConnection(standAloneConnSetting);
+      await conn.ping();
+      this.connection = Promise.resolve(conn);
+      return conn;
     }
   }
 
@@ -323,7 +297,7 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Pool, PoolC
   public query: (typeof AbstractDriver)['prototype']['query'] = async (query, opt = {}) => {
     return await this.open().then(async (conn): Promise<NSDatabase.IResult[]> => {
       const { requestId } = opt;
-      return new Promise(async (resolve, reject) => {
+      return new Promise(async (resolve) => {
           let currentQuery:string;
           let resultsAgg: NSDatabase.IResult[] = [];
           const messages = [];

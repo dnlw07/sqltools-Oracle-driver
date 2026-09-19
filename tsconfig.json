@@ -6,16 +6,18 @@
     "noUnusedParameters": true,
     "experimentalDecorators": true,
     "lib": ["es6"],
-    "module": "commonjs",
-    "moduleResolution": "Node",
+    "module": "Node16",
+    "moduleResolution": "Node16",
     "noEmit": false,
     "removeComments": true,
     "resolveJsonModule": true,
     "sourceMap": true,
     "skipLibCheck": true,
+    "strict": false,
     "declaration": false,
     "target": "esnext",
-		"outDir": "out"
+    "rootDir": "src",
+    "outDir": "out"
   },
   "include": [
     "src/**/*"
