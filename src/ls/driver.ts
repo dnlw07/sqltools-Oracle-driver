@@ -22,6 +22,22 @@ export interface IOracleResultEditResponse {
   failedIndex?: number;
 }
 
+function formatDuration(milliseconds: number): string {
+  const totalSeconds = Math.max(0, Number(milliseconds) || 0) / 1000;
+  if (totalSeconds < 60) {
+    const seconds = totalSeconds.toFixed(totalSeconds < 10 ? 2 : 1).replace(/\.?0+$/, '');
+    return `${seconds}sec`;
+  }
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) {
+    const seconds = Math.floor(totalSeconds % 60);
+    return `${totalMinutes}min${seconds ? ` ${seconds}sec` : ''}`;
+  }
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours}h${minutes ? ` ${minutes}min` : ''}`;
+}
+
 export interface PoolConfig{
   // 
   autoCommit?: boolean;
@@ -401,7 +417,7 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Pool, PoolC
               DbmsOuta = DbmsOuta + '-----------------------DBMS_OUTPUT END-----------------------';
               this.log.info(DbmsOuta);
             }
-            this.log.info(`cost :${executeCost.toFixed(2)}ms`);
+            this.log.info(`cost: ${formatDuration(executeCost)}`);
 
             if((rowsAffectedAll>0) || (selectQueryNum < queries.length) || (DbmsOut.length > 0)){
               let executeTime = new Date();
