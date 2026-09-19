@@ -10,6 +10,18 @@ import {performance} from 'perf_hooks'
 
 const toBool = (v: any) => v && (v.toString() === '1' || v.toString().toLowerCase() === 'true' || v.toString().toLowerCase() === 'yes');
 
+export interface IOracleResultEdit {
+  table: { label: string; schema?: string };
+  primaryKey: { [column: string]: any };
+  changes: { [column: string]: any };
+}
+
+export interface IOracleResultEditResponse {
+  success: boolean;
+  error?: string;
+  failedIndex?: number;
+}
+
 export interface PoolConfig{
   // 
   autoCommit?: boolean;
@@ -191,6 +203,107 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Pool, PoolC
     this.log.info(str + date.toLocaleTimeString());
   }
 
+  private currentSchemaCache: string | null = null;
+
+  // Oracle resolves unqualified table names against the session's current schema,
+  // which is normally the connected user, not a fixed placeholder.
+  private async getCurrentSchema(conn: OracleDBLib.Connection): Promise<string> {
+    if (this.currentSchemaCache) return this.currentSchemaCache;
+    const res: any = await conn.execute(`SELECT SYS_CONTEXT('USERENV','CURRENT_SCHEMA') AS "SCHEMA" FROM DUAL`, [], { outFormat: this.lib.OUT_FORMAT_OBJECT });
+    const value = res.rows && res.rows[0] && (res.rows[0].SCHEMA || res.rows[0].schema || Object.values(res.rows[0])[0]);
+    this.currentSchemaCache = value ? String(value).toUpperCase() : (this.credentials.username || '').toUpperCase();
+    return this.currentSchemaCache;
+  }
+
+  // oracledb's result metadata doesn't include the source table/schema per column, so a single,
+  // unambiguous FROM clause is required to know what table a result can be saved back to.
+  private getSingleTableSource(sql: string): { schema: string; table: string } | null {
+    const normalized = sql.replace(/\s+/g, ' ');
+    if (/\bJOIN\b|\bUNION\b|\bINTERSECT\b|\bMINUS\b|\bFROM\s*\(/i.test(normalized)) return null;
+    const match = normalized.match(/\bFROM\s+(?:(?:"([^"]+)"|([A-Za-z_][\w$]*))\s*\.\s*)?(?:"([^"]+)"|([A-Za-z_][\w$]*))(?:\s+(?:AS\s+)?[A-Za-z_][\w$]*)?(?:\s|;|$)/i);
+    if (!match) return null;
+    return {
+      schema: (match[1] || match[2] || '').toUpperCase(),
+      table: (match[3] || match[4]).toUpperCase(),
+    };
+  }
+
+  private async resolveResultEditability(conn: OracleDBLib.Connection, cols: string[], sql: string) {
+    if (!cols.length) return { editable: false, nonEditableReason: 'Result has no columns.' };
+    const singleTable = this.getSingleTableSource(sql);
+    if (!singleTable) return { editable: false, nonEditableReason: 'Result does not identify one physical Oracle table.' };
+    const schema = singleTable.schema || await this.getCurrentSchema(conn);
+    const table = singleTable.table;
+
+    const catalogRes: any = await conn.execute(
+      `SELECT COLUMN_NAME AS "column" FROM ALL_TAB_COLUMNS WHERE OWNER = :ownerName AND TABLE_NAME = :tableName ORDER BY COLUMN_ID`,
+      { ownerName: schema.toUpperCase(), tableName: table.toUpperCase() },
+      { outFormat: this.lib.OUT_FORMAT_OBJECT }
+    );
+    const knownColumns = new Set((catalogRes.rows || []).map((row: any) => String(row.column || row.COLUMN || Object.values(row)[0]).toUpperCase()));
+    if (!knownColumns.size) return { editable: false, nonEditableReason: 'Result columns cannot be mapped to the source Oracle table.' };
+
+    const resolvedSources = cols.map((name, index) => ({ index, sourceColumn: name, table, schema }));
+    if (resolvedSources.some(source => !knownColumns.has(String(source.sourceColumn).toUpperCase()))) {
+      return { editable: false, nonEditableReason: 'Result columns cannot be mapped to the source Oracle table.' };
+    }
+
+    const pkRes: any = await conn.execute(
+      `SELECT cols.COLUMN_NAME AS "column" FROM ALL_CONSTRAINTS cons JOIN ALL_CONS_COLUMNS cols
+         ON cons.CONSTRAINT_NAME = cols.CONSTRAINT_NAME AND cons.OWNER = cols.OWNER
+       WHERE cons.CONSTRAINT_TYPE = 'P' AND cons.OWNER = :ownerName AND cons.TABLE_NAME = :tableName
+       ORDER BY cols.POSITION`,
+      { ownerName: schema.toUpperCase(), tableName: table.toUpperCase() },
+      { outFormat: this.lib.OUT_FORMAT_OBJECT }
+    );
+    const primaryKeys = (pkRes.rows || []).map((row: any) => String(row.column || row.COLUMN || Object.values(row)[0]).toUpperCase());
+    const includedColumns = new Set(resolvedSources.map(source => String(source.sourceColumn).toUpperCase()));
+
+    const columnMeta = resolvedSources.map(source => ({
+      name: cols[source.index],
+      sourceColumn: source.sourceColumn,
+      table: source.table,
+      schema: source.schema,
+      isPk: primaryKeys.includes(String(source.sourceColumn).toUpperCase()),
+      editable: !primaryKeys.includes(String(source.sourceColumn).toUpperCase()),
+    }));
+    // no primary key: every mapped column is used to locate the row on save instead
+    if (primaryKeys.length && !primaryKeys.every(column => includedColumns.has(column))) {
+      return { columnMeta, editable: false, nonEditableReason: 'Result must include every primary key column.' };
+    }
+    return { columnMeta, editable: true };
+  }
+
+  public async applyEdits(edits: IOracleResultEdit[], _opt: any = {}): Promise<IOracleResultEditResponse> {
+    if (!edits.length) return { success: true };
+    const quoteIdentifier = (identifier: string) => `"${identifier.replace(/"/g, '""')}"`;
+    const conn = await this.open();
+    try {
+      for (let index = 0; index < edits.length; index++) {
+        const { table, primaryKey, changes } = edits[index];
+        const changeColumns = Object.keys(changes);
+        const primaryKeyColumns = Object.keys(primaryKey);
+        if (!table?.label || !changeColumns.length || !primaryKeyColumns.length) throw new Error('Invalid edit request.');
+        const binds: any = {};
+        const setClause = changeColumns.map((column, i) => { binds[`s${i}`] = changes[column]; return `${quoteIdentifier(column)} = :s${i}`; }).join(', ');
+        const whereClause = primaryKeyColumns.map((column, i) => { binds[`w${i}`] = primaryKey[column]; return `${quoteIdentifier(column)} = :w${i}`; }).join(' AND ');
+        const relation = [table.schema, table.label].filter(Boolean).map(quoteIdentifier).join('.');
+        const result: any = await conn.execute(`UPDATE ${relation} SET ${setClause} WHERE ${whereClause}`, binds, { autoCommit: false });
+        if (result.rowsAffected !== 1) {
+          await conn.rollback();
+          return { success: false, failedIndex: index, error: 'Row was modified or deleted since it was loaded.' };
+        }
+      }
+      await conn.commit();
+      return { success: true };
+    } catch (error) {
+      await conn.rollback().catch(() => undefined);
+      return { success: false, error: error?.message || String(error) };
+    } finally {
+      await conn.close().catch(() => undefined);
+    }
+  }
+
   public query: (typeof AbstractDriver)['prototype']['query'] = async (query, opt = {}) => {
     return await this.open().then(async (conn): Promise<NSDatabase.IResult[]> => {
       const { requestId } = opt;
@@ -249,11 +362,17 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Pool, PoolC
               }
 
               if(isSelectQueries[i]){
+                const selectCols = (res.rows && res.rows.length>0) ? Object.keys(res.rows[0]) : [];
+                const editability = await this.resolveResultEditability(conn, selectCols, q).catch(error => {
+                  this.log.error(`Oracle result metadata resolution failed: ${error && error.message || error}`);
+                  return { editable: false, nonEditableReason: `Unable to resolve table metadata: ${error && error.message || error}` };
+                });
                 resultsAgg.push(<NSDatabase.IResult>{
                   requestId,
                   resultId: generateId(),
                   connId: this.getId(),
-                  cols: (res.rows && res.rows.length>0) ? Object.keys(res.rows[0]) : [],
+                  cols: selectCols,
+                  ...editability,
                   messages,
                   query: q,
                   results: res.rows,
