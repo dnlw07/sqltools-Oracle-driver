@@ -303,6 +303,10 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
     }
   }
 
+  public singleQuery: (typeof AbstractDriver)['prototype']['singleQuery'] = ((query: any, opt: any) => {
+    return this.query(query, { ...opt, __internal: true }).then(([result]) => result);
+  }) as any;
+
   public query: (typeof AbstractDriver)['prototype']['query'] = async (query, opt = {}) => {
     return await this.open().then(async (conn): Promise<NSDatabase.IResult[]> => {
       const { requestId } = opt;
@@ -325,7 +329,7 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
               outFormat: this.lib.OUT_FORMAT_OBJECT,   // query result format
               dmlRowCounts: true,                      //the number of rows affected by each input row
               autoCommit: this.autoCommit,   //control autocommit
-              maxRows: this.maxRows
+              maxRows: (opt as any).__internal ? 0 : this.maxRows
             };
             // conn.execute(`ALTER SESSION SET NLS_NUMERIC_CHARACTERS = '.,'`);
             let rowsAffectedAll: number = 0;
@@ -348,7 +352,7 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
               
               const startTime = performance.now();
               // A lone SELECT/WITH is paged; scripts with several statements keep unpaginated behaviour.
-              const paginated = queries.length === 1 && isSelectQueries[i] && this.isPaginatableSelect(q);
+              const paginated = !(opt as any).__internal && queries.length === 1 && isSelectQueries[i] && this.isPaginatableSelect(q);
               const pageSize = Math.max(1, Number(opt.pageSize) || Number(this.credentials.previewLimit) || 100);
               const page = Math.max(0, Number(opt.page) || 0);
               const baseSql = q.replace(/[;\s/]+$/, '');
