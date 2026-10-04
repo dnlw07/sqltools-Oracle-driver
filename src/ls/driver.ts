@@ -334,19 +334,29 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
 
             for (var i =0;i<queries.length;i++) {
               let q = queries[i];
-              // console.log(q);
               currentQuery = q;
               row = rows[i];
               column = columns[i];
               
-              let startTime = performance.now();
+              const startTime = performance.now();
               let res: any = await conn.execute(q,binds,options) || [];
-              let endTime = performance.now();
+              const elapsed = performance.now() - startTime;
+              const duration = formatDuration(elapsed);
+              const statementType = q.trim().split(/\s+/, 1)[0].toUpperCase();
 
-              executeCost += (endTime - startTime);
+              executeCost += elapsed;
               if (res.rowsAffected) {
                 rowsAffectedAll += res.rowsAffected;
               }
+
+              const statusMessage = isSelectQueries[i]
+                ? `${(res.rows || []).length} row${(res.rows || []).length === 1 ? '' : 's'} retrieved in ${duration}.`
+                : typeof res.rowsAffected === 'number'
+                  ? `${statementType} executed successfully. ${res.rowsAffected} row${res.rowsAffected === 1 ? '' : 's'} affected (${duration}).`
+                  : `${statementType} executed successfully in ${duration}.`;
+              const statementMessages = [{ date: new Date(), message: statusMessage }];
+              messages.push(statementMessages[0]);
+              this.log.info(`${statusMessage}\n${q.trim()}`);
 
               if(isSelectQueries[i]){
                 selectQueryNum += 1;
@@ -364,7 +374,7 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
                   connId: this.getId(),
                   cols: selectCols,
                   ...editability,
-                  messages,
+                  messages: statementMessages,
                   query: q,
                   results: res.rows,
                 });
@@ -406,12 +416,10 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
                 results: [{'rowsAffted':rowsAffectedAll+' rows were affected','DBMS_OUTPUT':DbmsOut,'executeTime':executeTime.toLocaleTimeString()}],
               });
             }
-            messages.push(query.toString());
             fs.writeFileSync(Oracle_Diagnosis_Path,JSON.stringify({"state":"0","query":query.toString()}));
             return resolve(resultsAgg);
           }catch(err){
-            console.log(currentQuery);
-            console.log(err);
+            this.log.error(`Oracle query failed: ${err.message || String(err)}\n${currentQuery || query.toString()}`);
             for(var i=0;i<err.offset;i++){
               ++column;
               if(currentQuery[i] == '\n'){
@@ -419,7 +427,7 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
                 column = 1;
               }
             }
-            messages.push(err.message+'\n'+'intra-block-posi:('+row+','+column+')');
+            messages.push({ date: new Date(), message: `${err.message || String(err)}\nintra-block-posi:(${row},${column})` });
             resultsAgg.push(<NSDatabase.IResult>{
               requestId,
               resultId: generateId(),
