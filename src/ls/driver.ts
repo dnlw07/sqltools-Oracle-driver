@@ -103,23 +103,7 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
 
   public async open() {
     if (this.connection) {
-      if(this.pooled) {
-        const conn = await this.lib.getConnection();
-        await conn.ping();
-        this.connection = Promise.resolve(conn);
-        return conn;
-      } else {
-        const standAloneConnSetting = {
-          user: this.credentials.username,
-          password: this.credentials.password,
-          connectString: this.credentials.connectString,
-          privilege: this.privilegeMap[this.privilege]
-        };
-        const conn = await this.lib.getConnection(standAloneConnSetting);
-        await conn.ping();
-        this.connection = Promise.resolve(conn);
-        return conn;
-      }
+      return this.connection;
     }
     if(!this.credentials.connectString){
       if (this.credentials.server && this.credentials.port) {
@@ -183,8 +167,9 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
 
   public async close() {
     if (!this.connection) return Promise.resolve();
-    return this.connection.then((conn) => {
+    return this.connection.then(async (conn) => {
       if(this.pooled){
+        await conn.close();
         return new Promise<void>((resolve, reject) => {
           this.lib.getPool().close(0,(err) => {
             if (err) return reject(err);
@@ -307,8 +292,6 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
     } catch (error) {
       await conn.rollback().catch(() => undefined);
       return { success: false, error: error?.message || String(error) };
-    } finally {
-      await conn.close().catch(() => undefined);
     }
   }
 
@@ -451,11 +434,6 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
             let data = JSON.stringify({"state":"0","query":query.toString(),"currentQuery":currentQuery,"message":err.message,"row":row-1,'column':column-1, "offset":err.offset});
             fs.writeFileSync(Oracle_Diagnosis_Path,data);
             return resolve(resultsAgg);
-          }finally {
-            if (conn && requestId) {
-              await conn.close();
-            }
-            // this.calTime("finally");
           }
       });
     });
