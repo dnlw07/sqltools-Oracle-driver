@@ -38,6 +38,15 @@ function formatDuration(milliseconds: number): string {
   return `${hours}h${minutes ? ` ${minutes}min` : ''}`;
 }
 
+// DATE keeps a bare date at midnight; TIMESTAMP types always include the time
+function formatOracleDate(value: Date, isTimestamp: boolean): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const date = `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
+  const hasTime = value.getHours() || value.getMinutes() || value.getSeconds();
+  if (!isTimestamp && !hasTime) return date;
+  return `${date} ${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}`;
+}
+
 export interface PoolConfig{
   // 
   autoCommit?: boolean;
@@ -79,7 +88,16 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
    **/
   private get lib(): typeof OracleDBLib {
     const oracledb = this.requireDep('oracledb');
-    oracledb.fetchAsString = [oracledb.DATE, oracledb.CLOB, oracledb.NUMBER];
+    oracledb.fetchAsString = [oracledb.CLOB, oracledb.NUMBER];
+    (oracledb as any).fetchTypeHandler = (metaData: any) => {
+      if (metaData.dbType === oracledb.DB_TYPE_DATE) {
+        return { converter: (v: any) => (v instanceof Date ? formatOracleDate(v, false) : v) };
+      }
+      if (metaData.dbType === oracledb.DB_TYPE_TIMESTAMP || metaData.dbType === oracledb.DB_TYPE_TIMESTAMP_TZ || metaData.dbType === oracledb.DB_TYPE_TIMESTAMP_LTZ) {
+        return { converter: (v: any) => (v instanceof Date ? formatOracleDate(v, true) : v) };
+      }
+      return undefined;
+    };
     return oracledb;
   }
 
@@ -255,7 +273,7 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
       table: source.table,
       schema: source.schema,
       isPk: primaryKeys.includes(String(source.sourceColumn).toUpperCase()),
-      editable: !primaryKeys.includes(String(source.sourceColumn).toUpperCase()),
+      editable: true,
     }));
     // no primary key: every mapped column is used to locate the row on save instead
     if (primaryKeys.length && !primaryKeys.every(column => includedColumns.has(column))) {
