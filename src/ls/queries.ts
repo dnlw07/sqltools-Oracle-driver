@@ -130,6 +130,7 @@ from( select t.*
               where t.owner <> user
             ) t
     where 1 = 1
+    ${(p: any) => p.database ? `AND upper(t.schema) = upper('${String(p.database).replace(/'/g, "''")}')` : ''}
     ${p => p.search ? `AND (
       lower(t.label) LIKE '${p.search.toLowerCase()}%'
       OR lower(t.schema || '.' || t.label) LIKE '${p.search.toLowerCase()}%'
@@ -137,6 +138,17 @@ from( select t.*
   )t
   where rownum <= ${p => p.limit || 1500}
 
+`;
+
+const searchSchemas: IBaseQueries['searchTables'] = queryFactory`
+select u.username as "label",
+       '${ContextValue.SCHEMA}' as "type",
+       u.username as "schema",
+       'schema' as "detail"
+  from all_users u
+ where 1 = 1
+ ${p => p.search ? `AND lower(u.username) LIKE '%${p.search.toLowerCase()}%'` : ''}
+ order by decode(u.username,user,0,1), u.username
 `;
 const searchColumns: IBaseQueries['searchColumns'] = queryFactory`
 select t.*
@@ -185,5 +197,6 @@ export default {
   fetchTables,
   fetchViews,
   searchTables,
+  searchSchemas,
   searchColumns
 }

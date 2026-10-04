@@ -77,6 +77,14 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
   lowerCase = false;
   macroFile = '';
   maxRows = 0;
+  private totalRowsCache = new Map<string, number>();
+
+  private isPaginatableSelect(sql: string): boolean {
+    const stripped = sql.replace(/^(\s*--[^\n]*\n|\s*\/\*[\s\S]*?\*\/)+/g, '').trim();
+    if (!/^\(*\s*(SELECT|WITH)\b/i.test(stripped)) return false;
+    const tail = stripped.slice(-150).toUpperCase();
+    return !/\bFETCH\s+(FIRST|NEXT)\b|\bOFFSET\b|\bFOR\s+UPDATE\b/.test(tail);
+  }
   privilege = 'Normal';
   privilegeMap = {'SYSDBA':this.lib.SYSDBA,'SYSOPER':this.lib.SYSOPER,'SYSASM':this.lib.SYSASM,'SYSBACKUP':this.lib.SYSBACKUP,
                     'SYSDG':this.lib.SYSDG,'SYSKM':this.lib.SYSKM,'SYSPRELIM':this.lib.SYSPRELIM,'SYSRAC':this.lib.SYSRAC};
@@ -339,7 +347,46 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
               column = columns[i];
               
               const startTime = performance.now();
-              let res: any = await conn.execute(q,binds,options) || [];
+              // A lone SELECT/WITH is paged; scripts with several statements keep unpaginated behaviour.
+              const paginated = queries.length === 1 && isSelectQueries[i] && this.isPaginatableSelect(q);
+              const pageSize = Math.max(1, Number(opt.pageSize) || Number(this.credentials.previewLimit) || 100);
+              const page = Math.max(0, Number(opt.page) || 0);
+              const baseSql = q.replace(/[;\s/]+$/, '');
+              let total = 0;
+              let totalExact = true;
+              let hasMore = false;
+              let res: any;
+              if (paginated) {
+                res = await conn.execute(
+                  `SELECT * FROM (\n${baseSql}\n) OFFSET ${page * pageSize} ROWS FETCH NEXT ${pageSize + 1} ROWS ONLY`,
+                  binds,
+                  { ...options, maxRows: 0 }
+                ) || [];
+                const fetched: any[] = res.rows || [];
+                hasMore = fetched.length > pageSize;
+                res.rows = hasMore ? fetched.slice(0, pageSize) : fetched;
+                const cacheKey = `${requestId || ''} ${baseSql}`;
+                const knownTotal = page === 0 ? undefined : this.totalRowsCache.get(cacheKey);
+                if (typeof knownTotal === 'number') {
+                  total = knownTotal;
+                } else {
+                  try {
+                    const countRes: any = await conn.execute(
+                      `SELECT COUNT(*) AS "SQLTOOLS_TOTAL" FROM (\n${baseSql}\n)`, binds, { outFormat: this.lib.OUT_FORMAT_OBJECT }
+                    );
+                    total = Number(countRes.rows && countRes.rows[0] && countRes.rows[0].SQLTOOLS_TOTAL);
+                    if (!isFinite(total)) throw new Error('Count query returned a non-numeric value.');
+                    this.totalRowsCache.set(cacheKey, total);
+                    if (this.totalRowsCache.size > 100) this.totalRowsCache.delete(this.totalRowsCache.keys().next().value);
+                  } catch (countError) {
+                    // keep the "next" control usable when the COUNT wrapper is rejected
+                    totalExact = false;
+                    total = hasMore ? (page + 1) * pageSize + 1 : page * pageSize + res.rows.length;
+                  }
+                }
+              } else {
+                res = await conn.execute(q,binds,options) || [];
+              }
               const elapsed = performance.now() - startTime;
               const duration = formatDuration(elapsed);
               const statementType = q.trim().split(/\s+/, 1)[0].toUpperCase();
@@ -349,8 +396,13 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
                 rowsAffectedAll += res.rowsAffected;
               }
 
-              const statusMessage = isSelectQueries[i]
-                ? `${(res.rows || []).length} row${(res.rows || []).length === 1 ? '' : 's'} retrieved in ${duration}.`
+              const shown = (res.rows || []).length;
+              const statusMessage = paginated
+                ? (totalExact
+                  ? `${shown} row${shown === 1 ? '' : 's'} shown - page ${page + 1} of ${Math.max(1, Math.ceil(total / pageSize))} (${total} total, ${pageSize}/page) in ${duration}.`
+                  : `${shown} row${shown === 1 ? '' : 's'} shown - page ${page + 1} (${pageSize}/page) in ${duration}.`)
+                : isSelectQueries[i]
+                ? `${shown} row${shown === 1 ? '' : 's'} retrieved in ${duration}.`
                 : typeof res.rowsAffected === 'number'
                   ? `${statementType} executed successfully. ${res.rowsAffected} row${res.rowsAffected === 1 ? '' : 's'} affected (${duration}).`
                   : `${statementType} executed successfully in ${duration}.`;
@@ -368,7 +420,7 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
                   this.log.error(`Oracle result metadata resolution failed: ${error && error.message || error}`);
                   return { editable: false, nonEditableReason: `Unable to resolve table metadata: ${error && error.message || error}` };
                 });
-                resultsAgg.push(<NSDatabase.IResult>{
+                resultsAgg.push(<NSDatabase.IResult><unknown>{
                   requestId,
                   resultId: generateId(),
                   connId: this.getId(),
@@ -377,6 +429,7 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
                   messages: statementMessages,
                   query: q,
                   results: res.rows,
+                  ...(paginated ? { queryType: 'executeQuery', queryParams: q, page, pageSize, total } : {}),
                 });
               }
             }
@@ -495,12 +548,20 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
     switch (itemType) {
       case ContextValue.TABLE:
       case ContextValue.VIEW:
-        return this.queryResults(this.queries.searchTables({ search })).then(r => r.map(t => {
+        return this.queryResults(this.queries.searchTables({ search, ...extraParams })).then(r => r.map(t => {
           if(this.lowerCase){
             t.label = t.label.toLowerCase();
           }
           t.isView = toBool(t.isView);
           return t;
+        }));
+      case ContextValue.DATABASE:
+      case ContextValue.SCHEMA:
+        return this.queryResults(this.queries.searchSchemas({ search })).then(r => r.map(s => {
+          if(this.lowerCase){
+            s.label = s.label.toLowerCase();
+          }
+          return s;
         }));
       case ContextValue.COLUMN:
         return this.queryResults(this.queries.searchColumns({ search, ...extraParams })).then(r => r.map(c => {
