@@ -278,28 +278,57 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
   public async applyEdits(edits: IOracleResultEdit[], _opt: any = {}): Promise<IOracleResultEditResponse> {
     if (!edits.length) return { success: true };
     const quoteIdentifier = (identifier: string) => `"${identifier.replace(/"/g, '""')}"`;
-    const conn = await this.open();
+    let conn: OracleDBLib.Connection | undefined;
+    let failedIndex = 0;
     try {
-      for (let index = 0; index < edits.length; index++) {
-        const { table, primaryKey, changes } = edits[index];
-        const changeColumns = Object.keys(changes);
-        const primaryKeyColumns = Object.keys(primaryKey);
-        if (!table?.label || !changeColumns.length || !primaryKeyColumns.length) throw new Error('Invalid edit request.');
+      const prepared = edits.map(({ table, primaryKey, changes }, index) => {
+        failedIndex = index;
+        const changeColumns = Object.keys(changes || {});
+        const primaryKeyColumns = Object.keys(primaryKey || {});
+        if (!table?.label || !table.schema || !changeColumns.length || !primaryKeyColumns.length ||
+          primaryKeyColumns.some(column => primaryKey[column] === undefined) ||
+          changeColumns.some(column => changes[column] === undefined)) throw new Error('Invalid edit request.');
         const binds: any = {};
+        const matchBinds: any = {};
         const setClause = changeColumns.map((column, i) => { binds[`s${i}`] = changes[column]; return `${quoteIdentifier(column)} = :s${i}`; }).join(', ');
-        const whereClause = primaryKeyColumns.map((column, i) => { binds[`w${i}`] = primaryKey[column]; return `${quoteIdentifier(column)} = :w${i}`; }).join(' AND ');
+        const whereClause = primaryKeyColumns.map((column, i) => {
+          if (primaryKey[column] === null) return `${quoteIdentifier(column)} IS NULL`;
+          matchBinds[`w${i}`] = primaryKey[column];
+          return `${quoteIdentifier(column)} = :w${i}`;
+        }).join(' AND ');
         const relation = [table.schema, table.label].filter(Boolean).map(quoteIdentifier).join('.');
+        return { relation, setClause, whereClause, matchBinds, binds: { ...binds, ...matchBinds } };
+      });
+      await this.open();
+      conn = this.pooled ? await this.lib.getConnection() : await this.lib.getConnection({
+        user: this.credentials.username,
+        password: this.credentials.password,
+        connectString: this.credentials.connectString,
+        privilege: this.privilegeMap[this.privilege],
+      });
+      for (let index = 0; index < prepared.length; index++) {
+        failedIndex = index;
+        const { relation, whereClause, matchBinds } = prepared[index];
+        const result: any = await conn.execute(`SELECT COUNT(*) AS "matching_count" FROM ${relation} WHERE ${whereClause}`, matchBinds,
+          { autoCommit: false, outFormat: this.lib.OUT_FORMAT_OBJECT, maxRows: 1 });
+        const count = Number(result.rows?.[0]?.matching_count);
+        if (count !== 1) throw new Error(`Unsafe update for ${relation}: WHERE matches ${Number.isFinite(count) ? count : 'an unknown number of'} rows; expected exactly 1. No changes saved.`);
+      }
+      for (let index = 0; index < prepared.length; index++) {
+        failedIndex = index;
+        const { relation, setClause, whereClause, binds } = prepared[index];
         const result: any = await conn.execute(`UPDATE ${relation} SET ${setClause} WHERE ${whereClause}`, binds, { autoCommit: false });
         if (result.rowsAffected !== 1) {
-          await conn.rollback();
-          return { success: false, failedIndex: index, error: 'Row was modified or deleted since it was loaded.' };
+          throw new Error('Row matching changed after validation. No changes saved.');
         }
       }
       await conn.commit();
       return { success: true };
     } catch (error) {
-      await conn.rollback().catch(() => undefined);
-      return { success: false, error: error?.message || String(error) };
+      if (conn) await conn.rollback().catch(() => undefined);
+      return { success: false, failedIndex, error: error instanceof Error ? error.message : String(error) };
+    } finally {
+      if (conn) await conn.close().catch(() => undefined);
     }
   }
 
