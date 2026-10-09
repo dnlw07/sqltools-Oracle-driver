@@ -60,6 +60,7 @@ export interface PoolConfig{
 
 
 export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection, PoolConfig> implements IConnectionDriver {
+  public readonly supportsCompletionCatalog = true;
 
   /**
    * If you driver depends on node packages, list it below on `deps` prop.
@@ -448,7 +449,8 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
               }
 
               if(isSelectQueries[i]){
-                const selectCols = (res.rows && res.rows.length>0) ? Object.keys(res.rows[0]) : [];
+                const selectCols: string[] = res.rows?.length ? Object.keys(res.rows[0])
+                  : (res.metaData || []).map((field: { name: string }) => field.name);
                 const editability = await this.resolveResultEditability(conn, selectCols, q).catch(error => {
                   this.log.error(`Oracle result metadata resolution failed: ${error && error.message || error}`);
                   return { editable: false, nonEditableReason: `Unable to resolve table metadata: ${error && error.message || error}` };
@@ -582,15 +584,16 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
       case ContextValue.TABLE:
       case ContextValue.VIEW:
         return this.queryResults(this.queries.searchTables({ search, ...extraParams })).then(r => r.map(t => {
+          const catalogLabel = t.label;
           if(this.lowerCase){
             t.label = t.label.toLowerCase();
           }
           t.isView = toBool(t.isView);
-          return t;
+          return extraParams.completionCatalog ? { ...t, catalogLabel } : t;
         }));
       case ContextValue.DATABASE:
       case ContextValue.SCHEMA:
-        return this.queryResults(this.queries.searchSchemas({ search })).then(r => r.map(s => {
+        return this.queryResults(this.queries.searchSchemas({ search, ...extraParams })).then(r => r.map(s => {
           if(this.lowerCase){
             s.label = s.label.toLowerCase();
           }

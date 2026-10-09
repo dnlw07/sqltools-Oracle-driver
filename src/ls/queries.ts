@@ -136,7 +136,7 @@ from( select t.*
       OR lower(t.schema || '.' || t.label) LIKE '${p.search.toLowerCase()}%'
     )` : ''}
   )t
-  where rownum <= ${p => p.limit || 1500}
+  ${(p: any) => p.completionCatalog ? '' : `where rownum <= ${p.limit || 1500}`}
 
 `;
 
@@ -170,10 +170,14 @@ select t.*
               0 as "isFk"
          from all_tab_columns t
         where 1 = 1 
-          ${p => p.tables.filter(t => !!t.label).length
+          ${(p: any) => !p.completionCatalog && p.tables.filter(t => !!t.label).length
           ? `AND LOWER(t.TABLE_NAME) IN (${p.tables.filter(t => !!t.label).map(t => `'${t.label}'`.toLowerCase()).join(', ')})`
           : ''
           }
+          ${(p: any) => p.completionCatalog && p.tables.length
+           ? `AND (${p.tables.map(table => `t.TABLE_NAME = '${(table.catalogResolved ? String(table.label) : String(table.label).toUpperCase()).replace(/'/g, "''")}'${
+             table.schema || table.database ? ` AND t.OWNER = '${(table.catalogResolved ? String(table.schema || table.database) : String(table.schema || table.database).toUpperCase()).replace(/'/g, "''")}'` : ''
+           }`).map(condition => `(${condition})`).join(' OR ')})` : ''}
          ${p => p.search
           ? `AND (
           lower(t.TABLE_NAME || '.' || t.COLUMN_NAME) LIKE '${p.search.toLowerCase()}%'
@@ -186,7 +190,7 @@ select t.*
         decode(t.owner,user,0,1),
         t.TABLE_NAME, 
         t.COLUMN_ID)t
-where rownum <= ${p => p.limit || 1500}
+${(p: any) => p.completionCatalog ? '' : `where rownum <= ${p.limit || 1500}`}
 `;
 
 export default {

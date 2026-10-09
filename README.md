@@ -23,6 +23,13 @@ After installing the oracle Driver for SQLTools, you will be able to create conn
 * From VS Code by searching SQLTools Oracle Driver
 * From [marketplace](https://marketplace.visualstudio.com/items?itemName=hurly.sqltools-oracle-driver)
 ### ChageLog
+#### Unreleased
+* Empty SELECT results retain their column names from Oracle result metadata, including paginated queries and quoted aliases. No placeholder rows are added.
+#### 0.1.23
+* With SQLTools 0.28.43, cache complete schema/table catalogs per connection, persist them between sessions, and match abbreviated names locally before applying the completion display limit.
+* Load full columns lazily with owner/table scope and at most four concurrent lookups. Existing lowercase-label settings remain supported.
+* Cached catalogs refresh in the background after 15 minutes on the next completion request. Use **SQLTools: Refresh Autocomplete Catalog** for the active connection after metadata changes; this also invalidates cached columns. Errors retain the previous catalog and are logged, with a one-minute retry delay.
+* Query regression tests: `npm run test-compile` followed by `node --test test/completion-queries.test.js`.
 #### 0.1.0
 * First working version
 #### 0.1.1
