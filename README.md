@@ -23,6 +23,9 @@ After installing the oracle Driver for SQLTools, you will be able to create conn
 * From VS Code by searching SQLTools Oracle Driver
 * From [marketplace](https://marketplace.visualstudio.com/items?itemName=hurly.sqltools-oracle-driver)
 ### ChageLog
+#### Unreleased: repeated SELECT columns
+* If inline-view pagination rejects repeated projection names with ORA-00918 (for example `SELECT x.ID, x.* FROM employees x`), execute the unchanged original SELECT using a bounded result cursor. Keep both columns with unique grid labels and disable editing of ambiguous projections. Cursor pages use estimated totals and read/discard preceding rows for later pages.
+* Actual ambiguity in the original SQL remains an error. Oracle requires a qualified wildcard when mixing named columns and `*`; declare aliases used in WHERE clauses and use straight SQL quotes.
 #### Unreleased: connection reliability
 * Thin connections use TCP keep-alive probes every minute by default (`oracleOptions.expireTime`, in minutes; `0` disables). Thick mode uses Oracle Net `EXPIRE_TIME` in the connection string or client configuration.
 * Check cached connection health and ping after at least one minute without connection acquisition. Remove broken sessions after network errors so the next explicit query can reconnect; concurrent opens share one connection attempt.

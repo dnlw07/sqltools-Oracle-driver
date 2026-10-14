@@ -109,6 +109,47 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
     const tail = stripped.slice(-150).toUpperCase();
     return !/\bFETCH\s+(FIRST|NEXT)\b|\bOFFSET\b|\bFOR\s+UPDATE\b/.test(tail);
   }
+
+  private async fetchCursorPage(
+    conn: OracleDBLib.Connection, sql: string, page: number, pageSize: number,
+  ) {
+    const result = await conn.execute<unknown[]>(sql, {}, {
+      outFormat: this.lib.OUT_FORMAT_ARRAY, resultSet: true, maxRows: 0,
+    });
+    const cursor = result.resultSet;
+    if (!cursor) throw new Error('Oracle SELECT did not return a result cursor.');
+    try {
+      const names = (result.metaData || []).map(field => field.name);
+      const reserved = new Set(names);
+      const used = new Set<string>();
+      const cols = names.map(name => {
+        let label = name;
+        let suffix = 1;
+        while (used.has(label) || (label !== name && reserved.has(label))) {
+          label = `${name} (${suffix++})`;
+        }
+        used.add(label);
+        return label;
+      });
+      let remaining = page * pageSize;
+      while (remaining > 0) {
+        const skipped = await cursor.getRows(Math.min(remaining, pageSize));
+        remaining -= skipped.length;
+        if (!skipped.length) break;
+      }
+      const fetched = remaining > 0 ? [] : await cursor.getRows(pageSize + 1);
+      return {
+        cols,
+        rows: fetched.map(values => cols.reduce((row, name, index) => {
+          Object.defineProperty(row, name, { value: values[index], enumerable: true, writable: true, configurable: true });
+          return row;
+        }, {} as Record<string, unknown>)),
+        duplicateColumns: used.size !== reserved.size,
+      };
+    } finally {
+      await cursor.close();
+    }
+  }
   privilege = 'Normal';
   privilegeMap = {'SYSDBA':this.lib.SYSDBA,'SYSOPER':this.lib.SYSOPER,'SYSASM':this.lib.SYSASM,'SYSBACKUP':this.lib.SYSBACKUP,
                     'SYSDG':this.lib.SYSDG,'SYSKM':this.lib.SYSKM,'SYSPRELIM':this.lib.SYSPRELIM,'SYSRAC':this.lib.SYSRAC};
@@ -440,19 +481,36 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
               let total = 0;
               let totalExact = true;
               let hasMore = false;
+              let cursorCols: string[] | undefined;
+              let duplicateColumns = false;
+              let cursorPagination = false;
               let res: any;
               if (paginated) {
-                res = await conn.execute(
-                  `SELECT * FROM (\n${baseSql}\n) OFFSET ${page * pageSize} ROWS FETCH NEXT ${pageSize + 1} ROWS ONLY`,
-                  binds,
-                  { ...options, maxRows: 0 }
-                ) || [];
+                try {
+                  res = await conn.execute(
+                    `SELECT * FROM (\n${baseSql}\n) OFFSET ${page * pageSize} ROWS FETCH NEXT ${pageSize + 1} ROWS ONLY`,
+                    binds,
+                    { ...options, maxRows: 0 }
+                  ) || [];
+                } catch (error) {
+                  if (error.errorNum !== 918 && !/\bORA-00918\b/.test(error.message || '')) throw error;
+                  // Inline-view pagination rejects duplicate projection names that a top-level SELECT permits.
+                  this.log.info('Oracle pagination wrapper reported ORA-00918; executing the original SELECT using cursor pagination.');
+                  const cursorPage = await this.fetchCursorPage(conn, baseSql, page, pageSize);
+                  res = { rows: cursorPage.rows };
+                  cursorCols = cursorPage.cols;
+                  duplicateColumns = cursorPage.duplicateColumns;
+                  cursorPagination = true;
+                }
                 const fetched: any[] = res.rows || [];
                 hasMore = fetched.length > pageSize;
                 res.rows = hasMore ? fetched.slice(0, pageSize) : fetched;
                 const cacheKey = `${requestId || ''} ${baseSql}`;
                 const knownTotal = page === 0 ? undefined : this.totalRowsCache.get(cacheKey);
-                if (typeof knownTotal === 'number') {
+                if (cursorPagination) {
+                  totalExact = false;
+                  total = hasMore ? (page + 1) * pageSize + 1 : page * pageSize + res.rows.length;
+                } else if (typeof knownTotal === 'number') {
                   total = knownTotal;
                 } else {
                   try {
@@ -501,9 +559,11 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
               }
 
               if(isSelectQueries[i]){
-                const selectCols: string[] = res.rows?.length ? Object.keys(res.rows[0])
-                  : (res.metaData || []).map((field: { name: string }) => field.name);
-                const editability = await this.resolveResultEditability(conn, selectCols, q).catch(error => {
+                const selectCols: string[] = cursorCols || (res.rows?.length ? Object.keys(res.rows[0])
+                  : (res.metaData || []).map((field: { name: string }) => field.name));
+                const editability = duplicateColumns
+                  ? { editable: false, nonEditableReason: 'Result contains repeated column names. Use unique aliases to enable editing.' }
+                  : await this.resolveResultEditability(conn, selectCols, q).catch(error => {
                   if (this.isConnectionFailure(error)) throw error;
                   this.log.error(`Oracle result metadata resolution failed: ${error && error.message || error}`);
                   return { editable: false, nonEditableReason: `Unable to resolve table metadata: ${error && error.message || error}` };
