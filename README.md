@@ -23,6 +23,12 @@ After installing the oracle Driver for SQLTools, you will be able to create conn
 * From VS Code by searching SQLTools Oracle Driver
 * From [marketplace](https://marketplace.visualstudio.com/items?itemName=hurly.sqltools-oracle-driver)
 ### ChageLog
+#### Unreleased: connection reliability
+* Thin connections use TCP keep-alive probes every minute by default (`oracleOptions.expireTime`, in minutes; `0` disables). Thick mode uses Oracle Net `EXPIRE_TIME` in the connection string or client configuration.
+* Check cached connection health and ping after at least one minute without connection acquisition. Remove broken sessions after network errors so the next explicit query can reconnect; concurrent opens share one connection attempt.
+* Never automatically replay failed SQL. A disconnected session may have lost uncommitted changes, temporary state, and session settings. A new session does not restore these.
+* TCP probes reduce idle firewall drops but cannot prevent server shutdowns, VPN interruptions, or enforced session limits. `NJS-500`/`NJS-501` and `ECONNRESET` require checking network/firewall and Oracle server logs if they persist.
+* Connection tests: `npm run test-compile` then `node --test test`.
 #### Unreleased
 * Empty SELECT results retain their column names from Oracle result metadata, including paginated queries and quoted aliases. No placeholder rows are added.
 #### 0.1.23

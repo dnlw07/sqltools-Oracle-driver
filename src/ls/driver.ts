@@ -48,6 +48,7 @@ function formatOracleDate(value: Date, isTimestamp: boolean): string {
 }
 
 export interface PoolConfig{
+  expireTime?: number;
   // 
   autoCommit?: boolean;
   lowerCase?: boolean; //lowcase for completion
@@ -79,6 +80,28 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
   macroFile = '';
   maxRows = 0;
   private totalRowsCache = new Map<string, number>();
+  private opening?: Promise<OracleDBLib.Connection>;
+  private oraclePool?: OracleDBLib.Pool;
+  private lastConnectionUse = 0;
+
+  private isConnectionFailure(error: { code?: string; message?: string }): boolean {
+    return /^(NJS-003|NJS-500|NJS-501|NJS-005|DPI-1010|DPI-1080|ECONNRESET|EPIPE)$/.test(error?.code || '') ||
+      /\b(NJS-003|NJS-005|NJS-500|NJS-501|DPI-1010|DPI-1080|ORA-03113|ORA-03114|ORA-03135|ECONNRESET|EPIPE)\b/.test(error?.message || '');
+  }
+
+  private async discardConnection(conn: OracleDBLib.Connection) {
+    const cached = this.connection;
+    if (cached && await cached === conn && this.connection === cached) {
+      this.connection = null;
+      this.currentSchemaCache = null;
+      this.totalRowsCache.clear();
+    }
+    try {
+      await conn.close();
+    } catch (error) {
+      this.log.error(`Failed to close broken Oracle connection: ${error.message || String(error)}`);
+    }
+  }
 
   private isPaginatableSelect(sql: string): boolean {
     const stripped = sql.replace(/^(\s*--[^\n]*\n|\s*\/\*[\s\S]*?\*\/)+/g, '').trim();
@@ -111,9 +134,30 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
   }
 
   public async open() {
+    if (this.opening) return this.opening;
     if (this.connection) {
-      return this.connection;
+      const conn = await this.connection;
+      try {
+        if (!conn.isHealthy()) throw new Error('NJS-500: Oracle connection is no longer healthy.');
+        if (Date.now() - this.lastConnectionUse >= 60000) await conn.ping();
+        this.lastConnectionUse = Date.now();
+        return conn;
+      } catch (error) {
+        if (!this.isConnectionFailure(error)) throw error;
+        await this.discardConnection(conn);
+        throw new Error(`${error.message || String(error)}\nOracle session was lost; uncommitted changes and session settings may be lost. The query was not retried. Run it again explicitly to open a new session.`);
+      }
     }
+    const opening = this.openNewConnection();
+    this.opening = opening;
+    try {
+      return await opening;
+    } finally {
+      if (this.opening === opening) this.opening = undefined;
+    }
+  }
+
+  private async openNewConnection() {
     if(!this.credentials.connectString){
       if (this.credentials.server && this.credentials.port) {
         this.credentials.connectString = `${this.credentials.server}:${this.credentials.port}/${this.credentials.database}`;
@@ -148,56 +192,62 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
       // }
     }
     if(this.pooled){
-      await this.lib.createPool({
+      if (!this.oraclePool) this.oraclePool = await this.lib.createPool({
         user: this.credentials.username,
         password: this.credentials.password,
         connectString: this.credentials.connectString,
         poolIncrement : 0,
         poolMax       : 4,
-        poolMin       : 4
+        poolMin       : 4,
+        ...this.keepAliveOptions(),
       });
-      const conn = await this.lib.getConnection();
-      await conn.ping();
+      const conn = await this.oraclePool.getConnection();
+      try { await conn.ping(); } catch (error) { await this.discardConnection(conn); throw error; }
       this.connection = Promise.resolve(conn);
+      this.lastConnectionUse = Date.now();
       return conn;
     }else{
       const standAloneConnSetting = {
         user: this.credentials.username,
         password: this.credentials.password,
         connectString: this.credentials.connectString,
-        privilege: this.privilegeMap[this.privilege]
+        privilege: this.privilegeMap[this.privilege],
+        ...this.keepAliveOptions(),
       };
       const conn = await this.lib.getConnection(standAloneConnSetting);
-      await conn.ping();
+      try { await conn.ping(); } catch (error) { await this.discardConnection(conn); throw error; }
       this.connection = Promise.resolve(conn);
+      this.lastConnectionUse = Date.now();
       return conn;
     }
   }
 
-  public async close() {
-    if (!this.connection) return Promise.resolve();
-    return this.connection.then(async (conn) => {
-      if(this.pooled){
-        await conn.close();
-        return new Promise<void>((resolve, reject) => {
-          this.lib.getPool().close(0,(err) => {
-            if (err) return reject(err);
-            this.connection = null;
-            return resolve();
-          });
-        });
-      }
-      else{
-        return new Promise<void>((resolve, reject) => {
-          conn.close((err) => {
-            if (err) return reject(err);
-            this.connection = null;
-            return resolve();
-          });
-        });
-      }
+  private keepAliveOptions(): { expireTime?: number } {
+    if (this.credentials.oracleOptions?.thickMode) return {};
+    const expireTime = this.credentials.oracleOptions?.expireTime ?? 1;
+    if (!Number.isInteger(expireTime) || expireTime < 0) {
+      throw new Error('Oracle expireTime must be a non-negative integer number of minutes.');
+    }
+    return { expireTime };
+  }
 
-    });
+  public async close() {
+    if (this.opening) {
+      try { await this.opening; } catch (error) {
+        this.log.error(`Oracle connection opening failed during close: ${error.message || String(error)}`);
+      }
+    }
+    const connection = this.connection;
+    const pool = this.oraclePool;
+    this.connection = null;
+    this.oraclePool = undefined;
+    this.currentSchemaCache = null;
+    this.totalRowsCache.clear();
+    try {
+      if (connection) await (await connection).close();
+    } finally {
+      if (pool) await pool.close(0);
+    }
   }
 
   public calTime(str:string){
@@ -301,11 +351,12 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
         return { relation, setClause, whereClause, matchBinds, binds: { ...binds, ...matchBinds } };
       });
       await this.open();
-      conn = this.pooled ? await this.lib.getConnection() : await this.lib.getConnection({
+      conn = this.pooled ? await this.oraclePool.getConnection() : await this.lib.getConnection({
         user: this.credentials.username,
         password: this.credentials.password,
         connectString: this.credentials.connectString,
         privilege: this.privilegeMap[this.privilege],
+        ...this.keepAliveOptions(),
       });
       for (let index = 0; index < prepared.length; index++) {
         failedIndex = index;
@@ -413,6 +464,7 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
                     this.totalRowsCache.set(cacheKey, total);
                     if (this.totalRowsCache.size > 100) this.totalRowsCache.delete(this.totalRowsCache.keys().next().value);
                   } catch (countError) {
+                    if (this.isConnectionFailure(countError)) throw countError;
                     // keep the "next" control usable when the COUNT wrapper is rejected
                     totalExact = false;
                     total = hasMore ? (page + 1) * pageSize + 1 : page * pageSize + res.rows.length;
@@ -452,6 +504,7 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
                 const selectCols: string[] = res.rows?.length ? Object.keys(res.rows[0])
                   : (res.metaData || []).map((field: { name: string }) => field.name);
                 const editability = await this.resolveResultEditability(conn, selectCols, q).catch(error => {
+                  if (this.isConnectionFailure(error)) throw error;
                   this.log.error(`Oracle result metadata resolution failed: ${error && error.message || error}`);
                   return { editable: false, nonEditableReason: `Unable to resolve table metadata: ${error && error.message || error}` };
                 });
@@ -507,6 +560,10 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
             fs.writeFileSync(Oracle_Diagnosis_Path,JSON.stringify({"state":"0","query":query.toString()}));
             return resolve(resultsAgg);
           }catch(err){
+            if (this.isConnectionFailure(err)) {
+              await this.discardConnection(conn);
+              messages.push({ date: new Date(), message: 'Oracle session was lost; uncommitted changes and session settings may be lost. No statement was retried. The next explicit query opens a new session.' });
+            }
             this.log.error(`Oracle query failed: ${err.message || String(err)}\n${currentQuery || query.toString()}`);
             for(var i=0;i<err.offset;i++){
               ++column;
@@ -515,7 +572,9 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
                 column = 1;
               }
             }
-            messages.push({ date: new Date(), message: `${err.message || String(err)}\nintra-block-posi:(${row},${column})` });
+            const position = typeof row === 'number' && typeof column === 'number'
+              ? `\nintra-block-posi:(${row},${column})` : '';
+            messages.push({ date: new Date(), message: `${err.message || String(err)}${position}` });
             resultsAgg.push(<NSDatabase.IResult>{
               requestId,
               resultId: generateId(),
@@ -539,7 +598,13 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
    * Otherwise by default we open and close the connection only
    */
   public async testConnection() {
-    await this.query('SELECT 1 FROM DUAL', {});
+    const conn = await this.open();
+    try {
+      await conn.ping();
+    } catch (error) {
+      if (this.isConnectionFailure(error)) await this.discardConnection(conn);
+      throw error;
+    }
   }
 
   /**
