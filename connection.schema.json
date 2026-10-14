@@ -51,7 +51,7 @@
         "expireTime": {
           "type": "integer",
           "minimum": 0,
-          "default": 1,
+          "default": 10,
           "title": "TCP keep-alive interval (minutes, Thin mode)",
           "description": "Probe idle network connections to reduce firewall idle disconnects. Set 0 to disable. Thick mode requires EXPIRE_TIME in the connection string or Oracle Net configuration."
         },

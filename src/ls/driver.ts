@@ -265,7 +265,7 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
 
   private keepAliveOptions(): { expireTime?: number } {
     if (this.credentials.oracleOptions?.thickMode) return {};
-    const expireTime = this.credentials.oracleOptions?.expireTime ?? 1;
+    const expireTime = this.credentials.oracleOptions?.expireTime ?? 10;
     if (!Number.isInteger(expireTime) || expireTime < 0) {
       throw new Error('Oracle expireTime must be a non-negative integer number of minutes.');
     }

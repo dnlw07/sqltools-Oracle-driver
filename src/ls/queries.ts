@@ -158,6 +158,7 @@ from( select t.*
 const searchSchemas: IBaseQueries['searchTables'] = queryFactory`
 select u.username as "label",
        '${ContextValue.SCHEMA}' as "type",
+       'group-by-ref-type' as "iconId",
        u.username as "schema",
        'schema' as "detail"
   from all_users u

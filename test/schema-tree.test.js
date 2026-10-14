@@ -19,6 +19,7 @@ test('connections list schemas, then schema-scoped tables, views and columns', a
     assert.deepEqual(await driver.getChildrenForItem({ item: { type } }), schemas);
   }
   assert.match(statements[0], /order by decode\(u.username,user,0,1\), u.username/);
+  assert.match(statements[0], /'group-by-ref-type' as "iconId"/);
   const groups = await driver.getChildrenForItem({ item: schemas[0] });
   assert.deepEqual(groups.map(group => group.label), ['Tables', 'Views']);
   assert.deepEqual(await driver.getChildrenForItem({ item: groups[0], parent: schemas[0] }), tables);

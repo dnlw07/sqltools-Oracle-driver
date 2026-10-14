@@ -33,7 +33,7 @@ test('concurrent opens share one session and enable Thin TCP keep-alive', async 
   const [first, second] = await Promise.all([driver.open(), driver.open()]);
   assert.equal(first, second);
   assert.equal(connections.length, 1);
-  assert.equal(settings[0].expireTime, 1);
+  assert.equal(settings[0].expireTime, 10);
   assert.equal(await driver.open(), first);
   assert.equal(first.pings, 1);
   await driver.close();
@@ -43,6 +43,9 @@ test('keep-alive can be disabled and rejects invalid intervals', async () => {
   const disabled = setup({ expireTime: 0 });
   await disabled.driver.open();
   assert.equal(disabled.settings[0].expireTime, 0);
+  const custom = setup({ expireTime: 3 });
+  await custom.driver.open();
+  assert.equal(custom.settings[0].expireTime, 3);
   for (const expireTime of [-1, 1.5, '1']) {
     await assert.rejects(setup({ expireTime }).driver.open(), /non-negative integer/);
   }
@@ -128,7 +131,7 @@ test('each driver owns its pool and reuses it after a broken checked-out session
   let closed = 0;
   state.lib.createPool = async options => {
     created++;
-    assert.equal(options.expireTime, 1);
+    assert.equal(options.expireTime, 10);
     return {
       getConnection: () => state.lib.getConnection(),
       close: async () => { closed++; },
@@ -152,6 +155,6 @@ test('Thick connections do not receive the Thin-only expireTime option', async (
 
 test('connection schema exposes expireTime within oracleOptions', () => {
   const schema = require('../connection.schema.json');
-  assert.equal(schema.properties.oracleOptions.properties.expireTime.default, 1);
+  assert.equal(schema.properties.oracleOptions.properties.expireTime.default, 10);
   assert.equal(schema.properties.expireTime, undefined);
 });
