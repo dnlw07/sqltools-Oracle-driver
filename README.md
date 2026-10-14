@@ -23,19 +23,20 @@ After installing the oracle Driver for SQLTools, you will be able to create conn
 * From VS Code by searching SQLTools Oracle Driver
 * From [marketplace](https://marketplace.visualstudio.com/items?itemName=hurly.sqltools-oracle-driver)
 ### ChageLog
-#### Unreleased: schema tree
+#### 0.1.24 (2026-10-14)
+##### Schema tree
 * Oracle connections now list schema folders, with Tables and Views underneath each schema. Schemas retain Oracle catalog casing and the connected user's schema is listed first.
 * Table/view lists and column metadata are scoped to the selected owner. Show Records, Count Records, and Describe Table use the selected schema, including quoted identifiers.
-#### Unreleased: repeated SELECT columns
+##### Repeated SELECT columns
 * If inline-view pagination rejects repeated projection names with ORA-00918 (for example `SELECT x.ID, x.* FROM employees x`), execute the unchanged original SELECT using a bounded result cursor. Keep both columns with unique grid labels and disable editing of ambiguous projections. Cursor pages use estimated totals and read/discard preceding rows for later pages.
 * Actual ambiguity in the original SQL remains an error. Oracle requires a qualified wildcard when mixing named columns and `*`; declare aliases used in WHERE clauses and use straight SQL quotes.
-#### Unreleased: connection reliability
+##### Connection reliability
 * Thin connections use TCP keep-alive probes every minute by default (`oracleOptions.expireTime`, in minutes; `0` disables). Thick mode uses Oracle Net `EXPIRE_TIME` in the connection string or client configuration.
 * Check cached connection health and ping after at least one minute without connection acquisition. Remove broken sessions after network errors so the next explicit query can reconnect; concurrent opens share one connection attempt.
 * Never automatically replay failed SQL. A disconnected session may have lost uncommitted changes, temporary state, and session settings. A new session does not restore these.
 * TCP probes reduce idle firewall drops but cannot prevent server shutdowns, VPN interruptions, or enforced session limits. `NJS-500`/`NJS-501` and `ECONNRESET` require checking network/firewall and Oracle server logs if they persist.
 * Connection tests: `npm run test-compile` then `node --test test`.
-#### Unreleased
+##### Empty results
 * Empty SELECT results retain their column names from Oracle result metadata, including paginated queries and quoted aliases. No placeholder rows are added.
 #### 0.1.23
 * With SQLTools 0.28.43, cache complete schema/table catalogs per connection, persist them between sessions, and match abbreviated names locally before applying the completion display limit.
