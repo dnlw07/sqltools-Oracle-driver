@@ -675,6 +675,8 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
     switch (item.type) {
       case ContextValue.CONNECTION:
       case ContextValue.CONNECTED_CONNECTION:
+        return this.queryResults(this.queries.searchSchemas({ search: '' }));
+      case ContextValue.SCHEMA:
         return <MConnectionExplorer.IChildItem[]>[
           { label: 'Tables', type: ContextValue.RESOURCE_GROUP, iconId: 'folder', childType: ContextValue.TABLE },
           { label: 'Views', type: ContextValue.RESOURCE_GROUP, iconId: 'folder', childType: ContextValue.VIEW },

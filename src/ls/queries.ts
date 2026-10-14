@@ -5,9 +5,21 @@ function escapeTableName(table: Partial<NSDatabase.ITable>) {
   return `${table.label || table.toString()}`;
 }
 
+function escapeLiteral(value: string) {
+  return value.replace(/'/g, "''");
+}
+
+function qualifiedTableName(table: Partial<NSDatabase.ITable>) {
+  const quoteIdentifier = (value: string) => `"${value.replace(/"/g, '""')}"`;
+  return table.schema
+    ? `${quoteIdentifier(table.schema)}.${quoteIdentifier(escapeTableName(table))}`
+    : escapeTableName(table);
+}
+
 const describeTable: IBaseQueries['describeTable'] = queryFactory`
-SELECT * from user_tab_columns t
- WHERE t.TABLE_NAME = '${p => escapeTableName(p)}'
+SELECT * from all_tab_columns t
+ WHERE t.TABLE_NAME = '${p => escapeLiteral(escapeTableName(p))}'
+   AND t.OWNER = ${p => p.schema ? `'${escapeLiteral(p.schema)}'` : 'USER'}
  ORDER BY t.COLUMN_NAME
 `;
 
@@ -29,7 +41,8 @@ select t.COLUMN_NAME as "label",
        0 as "isPk",
        0 as "isFk"
   from all_tab_columns t 
- where t.TABLE_NAME = '${p => escapeTableName(p)}'
+ where t.TABLE_NAME = '${p => escapeLiteral(escapeTableName(p))}'
+ ${p => p.schema ? `AND t.OWNER = '${escapeLiteral(p.schema)}'` : ''}
  order by
    t.TABLE_NAME, 
    t.COLUMN_ID
@@ -38,14 +51,14 @@ select t.COLUMN_NAME as "label",
 const fetchRecords: IBaseQueries['fetchRecords'] = queryFactory`
 SELECT * FROM
   (SELECT ROWNUM NO,t.*
-     FROM ${p => escapeTableName(p.table)} t)t
+     FROM ${p => qualifiedTableName(p.table)} t)t
  WHERE t.NO > ${p => p.offset || 0}
    AND t.NO <= ${p => p.offset || 0} + ${p => p.limit || 50};
 `;
 
 const countRecords: IBaseQueries['countRecords'] = queryFactory`
 SELECT count(1) AS "total"
-FROM ${p => escapeTableName(p.table)};
+FROM ${p => qualifiedTableName(p.table)};
 `;
 
 
@@ -57,6 +70,7 @@ select t.table_name as "label",
        t.owner as "catalog",
        0 as "isView"
   from all_tables t
+ where t.owner = '${p => escapeLiteral(p.schema || p.label)}'
  order by
  decode(t.owner,user,0,1),
  t.table_name
@@ -69,6 +83,7 @@ select t.view_name as "label",
        t.owner as "catalog",
        1 as "isView"
   from all_views t
+ where t.owner = '${p => escapeLiteral(p.schema || p.label)}'
  order by
  decode(t.owner,user,0,1),
  t.view_name

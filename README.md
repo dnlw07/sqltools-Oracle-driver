@@ -23,6 +23,9 @@ After installing the oracle Driver for SQLTools, you will be able to create conn
 * From VS Code by searching SQLTools Oracle Driver
 * From [marketplace](https://marketplace.visualstudio.com/items?itemName=hurly.sqltools-oracle-driver)
 ### ChageLog
+#### Unreleased: schema tree
+* Oracle connections now list schema folders, with Tables and Views underneath each schema. Schemas retain Oracle catalog casing and the connected user's schema is listed first.
+* Table/view lists and column metadata are scoped to the selected owner. Show Records, Count Records, and Describe Table use the selected schema, including quoted identifiers.
 #### Unreleased: repeated SELECT columns
 * If inline-view pagination rejects repeated projection names with ORA-00918 (for example `SELECT x.ID, x.* FROM employees x`), execute the unchanged original SELECT using a bounded result cursor. Keep both columns with unique grid labels and disable editing of ambiguous projections. Cursor pages use estimated totals and read/discard preceding rows for later pages.
 * Actual ambiguity in the original SQL remains an error. Oracle requires a qualified wildcard when mixing named columns and `*`; declare aliases used in WHERE clauses and use straight SQL quotes.
