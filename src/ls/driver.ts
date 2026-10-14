@@ -243,7 +243,7 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
         ...this.keepAliveOptions(),
       });
       const conn = await this.oraclePool.getConnection();
-      try { await conn.ping(); } catch (error) { await this.discardConnection(conn); throw error; }
+      await this.prepareConnection(conn);
       this.connection = Promise.resolve(conn);
       this.lastConnectionUse = Date.now();
       return conn;
@@ -256,10 +256,35 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
         ...this.keepAliveOptions(),
       };
       const conn = await this.lib.getConnection(standAloneConnSetting);
-      try { await conn.ping(); } catch (error) { await this.discardConnection(conn); throw error; }
+      await this.prepareConnection(conn);
       this.connection = Promise.resolve(conn);
       this.lastConnectionUse = Date.now();
       return conn;
+    }
+  }
+
+  private async initializeSession(conn: OracleDBLib.Connection) {
+    const sql = this.credentials.connectionInitSql;
+    if (sql == null) return;
+    if (typeof sql !== 'string') throw new Error('Oracle connection initialization SQL must be a string.');
+    if (!sql.trim()) return;
+    const statements = parse(sql).queries;
+    for (let index = 0; index < statements.length; index++) {
+      try {
+        await conn.execute(statements[index], {}, { autoCommit: false });
+      } catch (error) {
+        throw new Error(`Oracle connection initialization SQL failed at statement ${index + 1}: ${error.message || String(error)}`);
+      }
+    }
+  }
+
+  private async prepareConnection(conn: OracleDBLib.Connection) {
+    try {
+      await conn.ping();
+      await this.initializeSession(conn);
+    } catch (error) {
+      await this.discardConnection(conn);
+      throw error;
     }
   }
 
@@ -399,6 +424,7 @@ export default class OracleDriver extends AbstractDriver<OracleDBLib.Connection,
         privilege: this.privilegeMap[this.privilege],
         ...this.keepAliveOptions(),
       });
+      await this.initializeSession(conn);
       for (let index = 0; index < prepared.length; index++) {
         failedIndex = index;
         const { relation, whereClause, matchBinds } = prepared[index];

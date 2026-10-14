@@ -1,4 +1,9 @@
 {
-  "ui:order": ["connectionMethod", "server", "port", "database", "connectString", "username", "usePassword","password","oracleOptions"],
+  "ui:order": ["connectionMethod", "server", "port", "database", "connectString", "username", "usePassword","password","oracleOptions","connectionInitSql"],
+  "connectionInitSql": {
+    "ui:widget": "textarea",
+    "ui:options": { "rows": 6 },
+    "ui:help": "Run when a session opens, not before every query. Use semicolons between SQL statements and / on a separate line after PL/SQL blocks. Connection tests also execute this SQL. Avoid scripts with side effects; no automatic commit is added."
+  },
   "password": { "ui:widget": "password" }
 }

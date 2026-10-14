@@ -23,6 +23,17 @@ After installing the oracle Driver for SQLTools, you will be able to create conn
 * From VS Code by searching SQLTools Oracle Driver
 * From [marketplace](https://marketplace.visualstudio.com/items?itemName=hurly.sqltools-oracle-driver)
 ### ChageLog
+#### Unreleased: connection initialization SQL
+* Add a multiline **Connection initialization SQL** field (`connectionInitSql`) to connection settings. Statements run sequentially on each newly opened session, including reconnects, pool checkouts, and separate grid-edit sessions, before user operations. Cached-session reuse does not rerun initialization.
+* Use semicolons between SQL statements and `/` on a separate line after PL/SQL blocks, following the driver's normal script parser. Connection tests also run initialization. A failing statement stops the script and rejects/closes the session with the statement number and Oracle error.
+* No automatic commit is added. Avoid initialization scripts with persistent side effects: Oracle DDL can commit implicitly, and reconnecting runs the script again. Settings are saved as plain text; do not put secrets in this field.
+
+Example:
+```sql
+ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD';
+ALTER SESSION SET NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS';
+```
+
 #### Unreleased
 * Schema names in the connection tree display the standard SQLTools schema icon.
 * The default Thin TCP keep-alive interval (`oracleOptions.expireTime`) is now 10 minutes. Explicitly configured intervals remain unchanged; `0` still disables probes. The separate cached-session health-check timing is unchanged.

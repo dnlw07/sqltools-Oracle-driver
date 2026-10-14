@@ -34,6 +34,12 @@
     }
   },
   "properties": {
+    "connectionInitSql": {
+      "title": "Connection initialization SQL",
+      "type": "string",
+      "default": "",
+      "description": "SQL statements executed in order when a session is opened, including reconnects and grid-edit sessions. Separate SQL statements with semicolons; terminate PL/SQL blocks with / on a separate line. A failure stops initialization and rejects the connection."
+    },
     "connectionMethod": {
       "title": "Connect using",
       "type": "string",
